@@ -1,3 +1,6 @@
+/* XTerm styles */
+@import '@xterm/xterm/css/xterm.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
