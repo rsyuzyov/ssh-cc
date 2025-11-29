@@ -71,13 +71,20 @@ fn add_ssh_config(
     hostname: String,
     username: String,
     config_path: String,
-    private_key_path: String,
+    public_key_path: String,
 ) -> Result<String, String> {
     // Создаем директорию если её нет
     if let Some(parent) = std::path::Path::new(&config_path).parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Не удалось создать директорию: {}", e))?;
     }
+    
+    // Получаем путь к приватному ключу из публичного (убираем .pub)
+    let private_key_path = if public_key_path.ends_with(".pub") {
+        public_key_path.trim_end_matches(".pub").to_string()
+    } else {
+        public_key_path.clone()
+    };
     
     // Формируем конфигурацию
     let ssh_config = format!(

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Terminal as TerminalIcon, Server, Play, Plus, CheckCircle, XCircle, Activity, Zap, Key, Trash2 } from 'lucide-react';
+import { Terminal as TerminalIcon, Server, Play, Plus, CheckCircle, XCircle, Activity, Zap, Key, Trash2, Edit } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import TerminalComponent from './Terminal';
 
@@ -7,6 +7,7 @@ export default function SSHDashboard() {
   const [servers, setServers] = useState([]);
   
   const [newServer, setNewServer] = useState({ host: '', user: 'root', name: '', publicKey: '' });
+  const [editingServer, setEditingServer] = useState(null);
   const [commandInput, setCommandInput] = useState('');
   const [commandHistory, setCommandHistory] = useState([]);
   const [selectedServers, setSelectedServers] = useState(new Set());
@@ -152,12 +153,18 @@ export default function SSHDashboard() {
     // Если имя не указано, используем хост
     const serverName = newServer.name || newServer.host;
     
+    // Вычисляем приватный ключ из публичного
+    const privateKey = newServer.publicKey.endsWith('.pub') 
+      ? newServer.publicKey.slice(0, -4) 
+      : newServer.publicKey;
+    
     const server = {
       id: Date.now(),
       name: serverName,
       host: newServer.host,
       user: newServer.user || 'root',
       publicKey: newServer.publicKey,
+      identityFile: privateKey,
       status: 'configuring',
       lastUsed: null
     };
@@ -177,7 +184,7 @@ export default function SSHDashboard() {
         hostname: server.host,
         username: server.user,
         configPath: configPath,
-        privateKeyPath: privateKeyPath
+        publicKeyPath: server.publicKey
       });
       
       // Открываем встроенный терминал с командой копирования ключа
@@ -281,6 +288,71 @@ export default function SSHDashboard() {
       // Удаляем из списка
       setServers(prev => prev.filter(s => !selectedServers.has(s.id)));
       setSelectedServers(new Set());
+    }
+  };
+
+  const startEditServer = (server) => {
+    setEditingServer({
+      id: server.id,
+      host: server.host,
+      user: server.user,
+      name: server.name,
+      publicKey: server.publicKey || server.identityFile || defaultPublicKey
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditingServer(null);
+  };
+
+  const saveEdit = async () => {
+    if (!editingServer.host || !editingServer.user || !editingServer.publicKey) {
+      alert('⚠️ Заполните все обязательные поля');
+      return;
+    }
+
+    const oldServer = servers.find(s => s.id === editingServer.id);
+    if (!oldServer) return;
+
+    try {
+      // Удаляем старую запись из конфига
+      await invoke('remove_ssh_config', {
+        serverName: oldServer.name,
+        configPath: configPath
+      });
+
+      // Добавляем новую запись с обновленными данными
+      await invoke('add_ssh_config', {
+        serverName: editingServer.name || editingServer.host,
+        hostname: editingServer.host,
+        username: editingServer.user,
+        configPath: configPath,
+        publicKeyPath: editingServer.publicKey
+      });
+
+      // Вычисляем приватный ключ из публичного
+      const privateKey = editingServer.publicKey.endsWith('.pub') 
+        ? editingServer.publicKey.slice(0, -4) 
+        : editingServer.publicKey;
+
+      // Обновляем список серверов
+      setServers(prev => prev.map(s => 
+        s.id === editingServer.id 
+          ? { 
+              ...s, 
+              name: editingServer.name || editingServer.host,
+              host: editingServer.host,
+              user: editingServer.user,
+              publicKey: editingServer.publicKey,
+              identityFile: privateKey
+            }
+          : s
+      ));
+
+      setEditingServer(null);
+    } catch (error) {
+      console.error('Ошибка редактирования сервера:', error);
+      alert(`❌ Ошибка редактирования: ${error}`);
     }
   };
 
@@ -419,10 +491,20 @@ export default function SSHDashboard() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2 bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
-            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-              <Server className="w-6 h-6 text-purple-400" />
-              Серверы
-            </h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                <Server className="w-6 h-6 text-purple-400" />
+                Серверы
+              </h2>
+              <button
+                onClick={addServer}
+                disabled={!newServer.host || !newServer.user || !newServer.publicKey}
+                className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                Добавить сервер
+              </button>
+            </div>
             
             {/* Настройка файла конфигурации */}
             <div className="mb-4">
@@ -435,16 +517,36 @@ export default function SSHDashboard() {
               />
             </div>
             
-            {/* Форма добавления сервера */}
+            {/* Форма добавления/редактирования сервера */}
             <div className="bg-black/30 rounded-xl p-4 mb-4">
+              {editingServer && (
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-yellow-300 text-sm flex items-center gap-2">
+                    <Edit className="w-4 h-4" />
+                    Редактирование сервера: {editingServer.name}
+                  </span>
+                  <button
+                    onClick={cancelEdit}
+                    className="text-purple-300 hover:text-purple-100 text-sm"
+                  >
+                    Отменить
+                  </button>
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <input
                   type="text"
                   placeholder="Хост (IP или домен)"
-                  value={newServer.host}
-                  onChange={(e) => setNewServer({ ...newServer, host: e.target.value })}
+                  value={editingServer ? editingServer.host : newServer.host}
+                  onChange={(e) => {
+                    if (editingServer) {
+                      setEditingServer({ ...editingServer, host: e.target.value });
+                    } else {
+                      setNewServer({ ...newServer, host: e.target.value });
+                    }
+                  }}
                   onBlur={(e) => {
-                    if (!newServer.name && e.target.value) {
+                    if (!editingServer && !newServer.name && e.target.value) {
                       setNewServer(prev => ({ ...prev, name: e.target.value }));
                     }
                   }}
@@ -453,45 +555,53 @@ export default function SSHDashboard() {
                 <input
                   type="text"
                   placeholder="User (root)"
-                  value={newServer.user}
-                  onChange={(e) => setNewServer({...newServer, user: e.target.value})}
+                  value={editingServer ? editingServer.user : newServer.user}
+                  onChange={(e) => {
+                    if (editingServer) {
+                      setEditingServer({ ...editingServer, user: e.target.value });
+                    } else {
+                      setNewServer({...newServer, user: e.target.value});
+                    }
+                  }}
                   className="px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400"
                 />
                 <input
                   type="text"
                   placeholder="Имя (опционально)"
-                  value={newServer.name}
-                  onChange={(e) => setNewServer({...newServer, name: e.target.value})}
+                  value={editingServer ? editingServer.name : newServer.name}
+                  onChange={(e) => {
+                    if (editingServer) {
+                      setEditingServer({ ...editingServer, name: e.target.value });
+                    } else {
+                      setNewServer({...newServer, name: e.target.value});
+                    }
+                  }}
                   className="px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400"
                 />
               </div>
-              <input
-                type="text"
-                placeholder="Публичный ключ (например: ~/.ssh/id_rsa.pub)"
-                value={newServer.publicKey}
-                onChange={(e) => setNewServer({...newServer, publicKey: e.target.value})}
-                className="w-full px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm mb-3"
-              />
-            </div>
-
-            {/* Командная панель */}
-            <div className="flex gap-3 mb-4">
-              <button
-                onClick={addServer}
-                disabled={!newServer.host || !newServer.user || !newServer.publicKey}
-                className="flex-1 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                Добавить сервер
-              </button>
-              <button
-                onClick={deleteSelectedServers}
-                disabled={selectedServers.size === 0}
-                className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-all"
-              >
-                <Trash2 className="w-4 h-4" />
-                Удалить выбранные ({selectedServers.size})
-              </button>
+              <div className="flex gap-3">
+                <input
+                  type="text"
+                  placeholder="Публичный ключ (например: ~/.ssh/id_rsa.pub)"
+                  value={editingServer ? editingServer.publicKey : newServer.publicKey}
+                  onChange={(e) => {
+                    if (editingServer) {
+                      setEditingServer({ ...editingServer, publicKey: e.target.value });
+                    } else {
+                      setNewServer({...newServer, publicKey: e.target.value});
+                    }
+                  }}
+                  className="flex-1 px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm"
+                />
+                {editingServer && (
+                  <button
+                    onClick={saveEdit}
+                    className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white px-6 py-2 rounded-lg font-medium transition-all"
+                  >
+                    Сохранить
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Таблица серверов */}
@@ -508,6 +618,8 @@ export default function SSHDashboard() {
                       <th className="p-3 text-left">Хост</th>
                       <th className="p-3 text-left">Ключ</th>
                       <th className="w-20 p-3 text-left">Статус</th>
+                      <th className="w-16 p-3 text-center"></th>
+                      <th className="w-16 p-3 text-center"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -576,6 +688,30 @@ export default function SSHDashboard() {
                               ...
                             </span>
                           )}
+                        </td>
+                        <td className="p-3 text-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEditServer(server);
+                            }}
+                            className="p-2 hover:bg-blue-500/20 rounded-lg transition-all"
+                            title="Редактировать сервер"
+                          >
+                            <Edit className="w-4 h-4 text-blue-400 hover:text-blue-300" />
+                          </button>
+                        </td>
+                        <td className="p-3 text-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteServer(server.id);
+                            }}
+                            className="p-2 hover:bg-red-500/20 rounded-lg transition-all"
+                            title="Удалить сервер"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-400 hover:text-red-300" />
+                          </button>
                         </td>
                       </tr>
                     ))}
