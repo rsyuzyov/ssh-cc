@@ -4,6 +4,40 @@ use std::process::Command;
 use serde::{Serialize, Deserialize};
 use std::path::Path;
 
+// Функция для удаления двойных пустых строк из конфига
+fn clean_config_file(config_path: &str) -> Result<(), String> {
+    let file = File::open(config_path)
+        .map_err(|e| format!("Не удалось открыть файл: {}", e))?;
+    
+    let reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    let mut prev_empty = false;
+    
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Ошибка чтения строки: {}", e))?;
+        let is_empty = line.trim().is_empty();
+        
+        // Пропускаем, если текущая и предыдущая строки пустые
+        if is_empty && prev_empty {
+            continue;
+        }
+        
+        lines.push(line);
+        prev_empty = is_empty;
+    }
+    
+    // Записываем очищенный конфиг
+    let mut file = File::create(config_path)
+        .map_err(|e| format!("Не удалось создать файл: {}", e))?;
+    
+    for line in lines {
+        writeln!(file, "{}", line)
+            .map_err(|e| format!("Не удалось записать строку: {}", e))?;
+    }
+    
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 struct SSHPaths {
     config: String,
@@ -61,6 +95,9 @@ fn add_ssh_config(
     // Записываем конфигурацию
     file.write_all(ssh_config.as_bytes())
         .map_err(|e| format!("Не удалось записать конфигурацию: {}", e))?;
+    
+    // Очищаем двойные пустые строки
+    clean_config_file(&config_path)?;
     
     Ok(format!("Конфигурация для {} успешно добавлена!", server_name))
 }
@@ -178,6 +215,9 @@ fn remove_ssh_config(
         writeln!(file, "{}", line)
             .map_err(|e| format!("Не удалось записать строку: {}", e))?;
     }
+    
+    // Очищаем двойные пустые строки
+    clean_config_file(&config_path)?;
     
     Ok(format!("Сервер {} удалён из конфигурации", server_name))
 }

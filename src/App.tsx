@@ -230,7 +230,7 @@ export default function SSHDashboard() {
     const server = servers.find(s => s.id === serverId);
     if (!server) return;
     
-    if (confirm('Удалить этот сервер из списка и из конфигурации?')) {
+    if (confirm(`Удалить сервер ${server.name} из списка и из конфигурации?`)) {
       try {
         // Удаляем из конфига
         await invoke('remove_ssh_config', {
@@ -240,10 +240,47 @@ export default function SSHDashboard() {
         
         // Удаляем из списка
         setServers(prev => prev.filter(s => s.id !== serverId));
+        
+        // Убираем из выбранных
+        const newSelection = new Set(selectedServers);
+        newSelection.delete(serverId);
+        setSelectedServers(newSelection);
       } catch (error) {
         console.error('Ошибка удаления сервера:', error);
         alert(`❌ Ошибка удаления из конфига: ${error}`);
       }
+    }
+  };
+
+  const deleteSelectedServers = async () => {
+    if (selectedServers.size === 0) {
+      alert('⚠️ Выберите серверы для удаления');
+      return;
+    }
+    
+    const serverNames = servers
+      .filter(s => selectedServers.has(s.id))
+      .map(s => s.name)
+      .join(', ');
+    
+    if (confirm(`Удалить выбранные серверы (${serverNames}) из списка и из конфигурации?`)) {
+      for (const serverId of selectedServers) {
+        const server = servers.find(s => s.id === serverId);
+        if (server) {
+          try {
+            await invoke('remove_ssh_config', {
+              serverName: server.name,
+              configPath: configPath
+            });
+          } catch (error) {
+            console.error(`Ошибка удаления сервера ${server.name}:`, error);
+          }
+        }
+      }
+      
+      // Удаляем из списка
+      setServers(prev => prev.filter(s => !selectedServers.has(s.id)));
+      setSelectedServers(new Set());
     }
   };
 
@@ -398,6 +435,7 @@ export default function SSHDashboard() {
               />
             </div>
             
+            {/* Форма добавления сервера */}
             <div className="bg-black/30 rounded-xl p-4 mb-4">
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <input
@@ -406,7 +444,6 @@ export default function SSHDashboard() {
                   value={newServer.host}
                   onChange={(e) => setNewServer({ ...newServer, host: e.target.value })}
                   onBlur={(e) => {
-                    // Если имя пустое, присваиваем имя = хост при выходе из поля
                     if (!newServer.name && e.target.value) {
                       setNewServer(prev => ({ ...prev, name: e.target.value }));
                     }
@@ -428,124 +465,123 @@ export default function SSHDashboard() {
                   className="px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400"
                 />
               </div>
-              <div className="mb-3">
-                <input
-                  type="text"
-                  placeholder="Публичный ключ (например: ~/.ssh/id_rsa.pub)"
-                  value={newServer.publicKey}
-                  onChange={(e) => setNewServer({...newServer, publicKey: e.target.value})}
-                  className="w-full px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm"
-                />
-              </div>
+              <input
+                type="text"
+                placeholder="Публичный ключ (например: ~/.ssh/id_rsa.pub)"
+                value={newServer.publicKey}
+                onChange={(e) => setNewServer({...newServer, publicKey: e.target.value})}
+                className="w-full px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm mb-3"
+              />
+            </div>
+
+            {/* Командная панель */}
+            <div className="flex gap-3 mb-4">
               <button
                 onClick={addServer}
                 disabled={!newServer.host || !newServer.user || !newServer.publicKey}
-                className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-all"
+                className="flex-1 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-all"
               >
                 <Plus className="w-4 h-4" />
                 Добавить сервер
               </button>
+              <button
+                onClick={deleteSelectedServers}
+                disabled={selectedServers.size === 0}
+                className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-all"
+              >
+                <Trash2 className="w-4 h-4" />
+                Удалить выбранные ({selectedServers.size})
+              </button>
             </div>
 
-            <div className="space-y-3">
-              {servers.map(server => (
-                <div
-                  key={server.id}
-                  className={`bg-black/30 rounded-xl p-4 border-2 transition-all ${
-                    server.status === 'configured'
-                      ? selectedServers.has(server.id)
-                        ? 'border-purple-400 bg-purple-900/30 cursor-pointer'
-                        : 'border-transparent hover:border-purple-400/50 cursor-pointer'
-                      : 'border-yellow-500/30'
-                  }`}
-                  onClick={() => server.status === 'configured' && toggleServerSelection(server.id)}
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="text-lg font-bold text-white">{server.name}</h3>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteServer(server.id);
-                          }}
-                          className="p-1 hover:bg-red-500/20 rounded transition-all"
-                          title="Удалить сервер"
-                        >
-                          <Trash2 className="w-4 h-4 text-red-400 hover:text-red-300" />
-                        </button>
-                        {server.status === 'configured' ? (
-                          <span className="flex items-center gap-1 px-2 py-1 bg-green-500/20 text-green-300 text-xs rounded-full border border-green-500/30">
-                            <CheckCircle className="w-3 h-3" />
-                            Настроен
-                          </span>
-                        ) : server.status === 'configuring' ? (
-                          <span className="flex items-center gap-1 px-2 py-1 bg-blue-500/20 text-blue-300 text-xs rounded-full border border-blue-500/30">
-                            <Activity className="w-3 h-3" />
-                            Настройка...
-                          </span>
-                        ) : server.status === 'pending_verification' ? (
-                          <span className="flex items-center gap-1 px-2 py-1 bg-yellow-500/20 text-yellow-300 text-xs rounded-full border border-yellow-500/30">
-                            <Key className="w-3 h-3" />
-                            Ожидание проверки
-                          </span>
-                        ) : server.status === 'verifying' ? (
-                          <span className="flex items-center gap-1 px-2 py-1 bg-purple-500/20 text-purple-300 text-xs rounded-full border border-purple-500/30">
-                            <div className="w-3 h-3 animate-spin rounded-full border-2 border-purple-300 border-t-transparent"></div>
-                            Проверка...
-                          </span>
-                        ) : server.status === 'error' ? (
-                          <span className="flex items-center gap-1 px-2 py-1 bg-red-500/20 text-red-300 text-xs rounded-full border border-red-500/30">
-                            <XCircle className="w-3 h-3" />
-                            Ошибка
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="text-purple-200 text-sm space-y-1">
-                        <p><span className="text-purple-400">User:</span> {server.user}</p>
-                        <p><span className="text-purple-400">Host:</span> {server.host}</p>
-                        {server.identityFile && (
-                          <p className="flex items-center gap-1">
-                            <Key className="w-3 h-3 text-purple-400" />
-                            <span className="text-purple-400">Key:</span> 
-                            <span className="font-mono text-xs">{server.identityFile}</span>
-                          </p>
-                        )}
-                        {server.publicKey && (
-                          <p className="flex items-center gap-1">
-                            <Key className="w-3 h-3 text-purple-400" />
-                            <span className="text-purple-400">Public Key:</span> 
-                            <span className="font-mono text-xs">{server.publicKey}</span>
-                          </p>
-                        )}
-                        {server.lastUsed && (
-                          <p><span className="text-purple-400">Last used:</span> {server.lastUsed}</p>
-                        )}
-                      </div>
-                      {(server.status === 'pending_verification' || server.status === 'error') && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            verifyConnection(server);
-                          }}
-                          className="mt-3 text-sm bg-green-600/50 hover:bg-green-600/70 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all font-medium"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          Проверить подключение
-                        </button>
-                      )}
-                    </div>
-                    {server.status === 'configured' && (
-                      <input
-                        type="checkbox"
-                        checked={selectedServers.has(server.id)}
-                        onChange={() => {}}
-                        className="w-5 h-5 rounded border-purple-400 bg-purple-900/30 accent-purple-500"
-                      />
-                    )}
-                  </div>
+            {/* Таблица серверов */}
+            <div className="bg-black/30 rounded-xl overflow-hidden">{servers.length === 0 ? (
+                <div className="p-8 text-center text-purple-300/50">
+                  Нет серверов. Добавьте первый сервер!
                 </div>
-              ))}
+              ) : (
+                <table className="w-full">
+                  <thead className="bg-black/50">
+                    <tr className="text-purple-300 text-sm">
+                      <th className="w-12 p-3 text-left"></th>
+                      <th className="p-3 text-left">Имя</th>
+                      <th className="p-3 text-left">Хост</th>
+                      <th className="p-3 text-left">Ключ</th>
+                      <th className="w-20 p-3 text-left">Статус</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {servers.map(server => (
+                      <tr
+                        key={server.id}
+                        className={`border-t border-purple-500/20 transition-all ${
+                          server.status === 'configured'
+                            ? selectedServers.has(server.id)
+                              ? 'bg-purple-900/30'
+                              : 'hover:bg-white/5 cursor-pointer'
+                            : 'bg-yellow-500/10'
+                        }`}
+                        onClick={() => server.status === 'configured' && toggleServerSelection(server.id)}
+                      >
+                        <td className="p-3">
+                          {server.status === 'configured' && (
+                            <input
+                              type="checkbox"
+                              checked={selectedServers.has(server.id)}
+                              onChange={() => {}}
+                              className="w-4 h-4 rounded border-purple-400 bg-purple-900/30 accent-purple-500"
+                            />
+                          )}
+                        </td>
+                        <td className="p-3 text-white font-medium">{server.name}</td>
+                        <td className="p-3 text-purple-200">{server.host}</td>
+                        <td className="p-3 text-purple-300 font-mono text-xs">
+                          {server.identityFile || server.publicKey || '-'}
+                        </td>
+                        <td className="p-3">
+                          {server.status === 'configured' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-500/20 text-green-300 text-xs rounded-full border border-green-500/30">
+                              <CheckCircle className="w-3 h-3" />
+                              OK
+                            </span>
+                          ) : server.status === 'pending_verification' ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                verifyConnection(server);
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 bg-yellow-500/20 text-yellow-300 text-xs rounded-full border border-yellow-500/30 hover:bg-yellow-500/30 transition-all"
+                            >
+                              <Key className="w-3 h-3" />
+                              Проверить
+                            </button>
+                          ) : server.status === 'verifying' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-500/20 text-purple-300 text-xs rounded-full border border-purple-500/30">
+                              <div className="w-3 h-3 animate-spin rounded-full border-2 border-purple-300 border-t-transparent"></div>
+                            </span>
+                          ) : server.status === 'error' ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                verifyConnection(server);
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 bg-red-500/20 text-red-300 text-xs rounded-full border border-red-500/30 hover:bg-red-500/30 transition-all"
+                            >
+                              <XCircle className="w-3 h-3" />
+                              Повтор
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/20 text-blue-300 text-xs rounded-full border border-blue-500/30">
+                              <Activity className="w-3 h-3" />
+                              ...
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
 
