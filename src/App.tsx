@@ -1,19 +1,18 @@
 import React, { useState } from 'react';
-import { Terminal as TerminalIcon, Server, Play, Plus, CheckCircle, XCircle, Activity, Zap, Settings, Key, Trash2 } from 'lucide-react';
+import { Terminal as TerminalIcon, Server, Play, Plus, CheckCircle, XCircle, Activity, Zap, Key, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import TerminalComponent from './Terminal';
 
 export default function SSHDashboard() {
   const [servers, setServers] = useState([]);
   
-  const [newServer, setNewServer] = useState({ name: '', host: '', user: 'root' });
+  const [newServer, setNewServer] = useState({ host: '', user: 'root', name: '', publicKey: '' });
   const [commandInput, setCommandInput] = useState('');
   const [commandHistory, setCommandHistory] = useState([]);
   const [selectedServers, setSelectedServers] = useState(new Set());
   const [executing, setExecuting] = useState(false);
   const [savedSequences, setSavedSequences] = useState([]);
   const [sequenceName, setSequenceName] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   
   // Terminal state
@@ -21,8 +20,8 @@ export default function SSHDashboard() {
   const [terminalCommand, setTerminalCommand] = useState('');
   
   const [configPath, setConfigPath] = useState('');
-  const [publicKeyPath, setPublicKeyPath] = useState('');
   const [privateKeyPath, setPrivateKeyPath] = useState('');
+  const [defaultPublicKey, setDefaultPublicKey] = useState('');
 
   // Функция для загрузки серверов из конфига
   const loadServersFromConfig = async (path: string) => {
@@ -35,6 +34,7 @@ export default function SSHDashboard() {
         name: server.name,
         host: server.hostname,
         user: server.user,
+        identityFile: server.identity_file || null,
         status: 'configured',
         lastUsed: null
       }));
@@ -56,8 +56,39 @@ export default function SSHDashboard() {
         const paths: any = await invoke('load_ssh_paths');
         
         setConfigPath(paths.config);
-        setPublicKeyPath(paths.public_key);
         setPrivateKeyPath(paths.private_key);
+        
+        let publicKeyToUse = paths.public_key;
+        
+        // Если публичный ключ не сохранён, ищем первый .pub файл в ~/.ssh/
+        if (!publicKeyToUse) {
+          try {
+            const homeDir = await invoke('execute_terminal_command', { 
+              command: 'echo $env:USERPROFILE' 
+            });
+            const sshDir = `${homeDir.toString().trim()}/.ssh`;
+            
+            // Ищем все .pub файлы
+            const pubFiles: string = await invoke('execute_terminal_command', {
+              command: `Get-ChildItem "${sshDir}" -Filter *.pub | Select-Object -First 1 -ExpandProperty FullName`
+            });
+            
+            if (pubFiles && pubFiles.trim()) {
+              publicKeyToUse = pubFiles.trim().replace(/\\/g, '/');
+            } else {
+              // Если не найдено, используем дефолтный путь
+              publicKeyToUse = `${homeDir.toString().trim()}/.ssh/id_rsa.pub`;
+            }
+          } catch (err) {
+            console.error('Ошибка поиска .pub файлов:', err);
+            // Используем дефолтный путь
+            const homeDir = 'C:\\Users\\' + (process.env.USERNAME || 'Default');
+            publicKeyToUse = `${homeDir}/.ssh/id_rsa.pub`;
+          }
+        }
+        
+        setDefaultPublicKey(publicKeyToUse);
+        setNewServer(prev => ({ ...prev, publicKey: publicKeyToUse }));
         
         // Загружаем серверы из конфига
         await loadServersFromConfig(paths.config);
@@ -65,8 +96,11 @@ export default function SSHDashboard() {
         setIsInitialized(true);
       } catch (error) {
         console.error('Ошибка инициализации:', error);
-        // Если не удалось загрузить, открываем настройки
-        setShowSettings(true);
+        // Если не удалось загрузить, используем дефолтные значения
+        const homeDir = 'C:\\Users\\' + (process.env.USERNAME || 'Default');
+        const defaultKey = `${homeDir}/.ssh/id_rsa.pub`;
+        setDefaultPublicKey(defaultKey);
+        setNewServer(prev => ({ ...prev, publicKey: defaultKey }));
         setIsInitialized(true);
       }
     };
@@ -81,40 +115,60 @@ export default function SSHDashboard() {
       // Автоматически сохраняем настройки
       invoke('save_ssh_paths', {
         config: configPath,
-        publicKey: publicKeyPath,
+        publicKey: defaultPublicKey,
         privateKey: privateKeyPath
       }).catch(err => console.error('Ошибка сохранения:', err));
     }
   }, [configPath, isInitialized]);
 
-  // Сохраняем пути к ключам при изменении
+  // Сохраняем публичный ключ при изменении
+  React.useEffect(() => {
+    if (isInitialized && defaultPublicKey) {
+      invoke('save_ssh_paths', {
+        config: configPath,
+        publicKey: defaultPublicKey,
+        privateKey: privateKeyPath
+      }).catch(err => console.error('Ошибка сохранения:', err));
+    }
+  }, [defaultPublicKey, isInitialized]);
+
+  // Сохраняем приватный ключ при изменении
   React.useEffect(() => {
     if (isInitialized) {
       invoke('save_ssh_paths', {
         config: configPath,
-        publicKey: publicKeyPath,
+        publicKey: defaultPublicKey,
         privateKey: privateKeyPath
       }).catch(err => console.error('Ошибка сохранения:', err));
     }
-  }, [publicKeyPath, privateKeyPath, isInitialized]);
+  }, [privateKeyPath, isInitialized]);
 
   const addServer = async () => {
-    if (!newServer.name || !newServer.host) {
-      alert('⚠️ Пожалуйста, заполните имя и хост сервера');
+    if (!newServer.host) {
+      alert('⚠️ Пожалуйста, укажите хост сервера');
       return;
     }
     
+    // Если имя не указано, используем хост
+    const serverName = newServer.name || newServer.host;
+    
     const server = {
       id: Date.now(),
-      name: newServer.name,
+      name: serverName,
       host: newServer.host,
       user: newServer.user || 'root',
+      publicKey: newServer.publicKey,
       status: 'configuring',
       lastUsed: null
     };
     
     setServers([...servers, server]);
-    setNewServer({ name: '', host: '', user: 'root' });
+    
+    // Сохраняем публичный ключ как дефолтный
+    setDefaultPublicKey(newServer.publicKey);
+    
+    // Очищаем форму, но оставляем публичный ключ
+    setNewServer({ host: '', user: 'root', name: '', publicKey: newServer.publicKey });
     
     try {
       // Вызываем Tauri backend для добавления конфига
@@ -127,7 +181,7 @@ export default function SSHDashboard() {
       });
       
       // Открываем встроенный терминал с командой копирования ключа
-      const keyCommand = `type "${publicKeyPath}" | ssh ${server.user}@${server.host} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"`;
+      const keyCommand = `type "${server.publicKey}" | ssh ${server.user}@${server.host} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"`;
       setTerminalCommand(keyCommand);
       setShowTerminal(true);
       
@@ -172,9 +226,24 @@ export default function SSHDashboard() {
     }
   };
 
-  const deleteServer = (serverId) => {
-    if (confirm('Удалить этот сервер из списка?')) {
-      setServers(prev => prev.filter(s => s.id !== serverId));
+  const deleteServer = async (serverId) => {
+    const server = servers.find(s => s.id === serverId);
+    if (!server) return;
+    
+    if (confirm('Удалить этот сервер из списка и из конфигурации?')) {
+      try {
+        // Удаляем из конфига
+        await invoke('remove_ssh_config', {
+          serverName: server.name,
+          configPath: configPath
+        });
+        
+        // Удаляем из списка
+        setServers(prev => prev.filter(s => s.id !== serverId));
+      } catch (error) {
+        console.error('Ошибка удаления сервера:', error);
+        alert(`❌ Ошибка удаления из конфига: ${error}`);
+      }
     }
   };
 
@@ -307,66 +376,9 @@ export default function SSHDashboard() {
           <div className="flex items-center justify-center gap-3 mb-4">
             <TerminalIcon className="w-12 h-12 text-purple-400" />
             <h1 className="text-5xl font-bold text-white">SSH Command Center</h1>
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="ml-4 p-3 bg-white/10 hover:bg-white/20 rounded-lg border border-purple-500/30 transition-all"
-            >
-              <Settings className="w-6 h-6 text-purple-400" />
-            </button>
           </div>
           <p className="text-purple-200 text-lg">Управляйте своими серверами с элегантностью</p>
         </div>
-
-        {showSettings && (
-          <div className="mb-8 bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
-            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-              <Settings className="w-6 h-6 text-purple-400" />
-              Настройки
-            </h2>
-            <div className="mb-4 bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
-              <p className="text-blue-200 text-sm">
-                💡 <strong>Подсказка:</strong> Приложение автоматически читает серверы из файла конфигурации SSH. 
-                По умолчанию используется <code className="bg-black/30 px-2 py-1 rounded">~/.ssh/config</code>. 
-                Серверы с настроенными Host, HostName и User будут загружены автоматически.
-              </p>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-purple-200 text-sm font-medium mb-2">
-                  Файл конфигурации SSH
-                </label>
-                <input
-                  type="text"
-                  value={configPath}
-                  onChange={(e) => setConfigPath(e.target.value)}
-                  className="w-full px-4 py-2 bg-black/40 border border-purple-400/30 rounded-lg text-white focus:outline-none focus:border-purple-400 font-mono text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-purple-200 text-sm font-medium mb-2">
-                  Публичный ключ
-                </label>
-                <input
-                  type="text"
-                  value={publicKeyPath}
-                  onChange={(e) => setPublicKeyPath(e.target.value)}
-                  className="w-full px-4 py-2 bg-black/40 border border-purple-400/30 rounded-lg text-white focus:outline-none focus:border-purple-400 font-mono text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-purple-200 text-sm font-medium mb-2">
-                  Приватный ключ
-                </label>
-                <input
-                  type="text"
-                  value={privateKeyPath}
-                  onChange={(e) => setPrivateKeyPath(e.target.value)}
-                  className="w-full px-4 py-2 bg-black/40 border border-purple-400/30 rounded-lg text-white focus:outline-none focus:border-purple-400 font-mono text-sm"
-                />
-              </div>
-            </div>
-          </div>
-        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2 bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
@@ -375,20 +387,30 @@ export default function SSHDashboard() {
               Серверы
             </h2>
             
+            {/* Настройка файла конфигурации */}
+            <div className="mb-4">
+              <input
+                type="text"
+                placeholder="Файл конфигурации SSH (например: ~/.ssh/config)"
+                value={configPath}
+                onChange={(e) => setConfigPath(e.target.value)}
+                className="w-full px-4 py-2 bg-black/40 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm"
+              />
+            </div>
+            
             <div className="bg-black/30 rounded-xl p-4 mb-4">
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <input
                   type="text"
-                  placeholder="Имя (srv-test)"
-                  value={newServer.name}
-                  onChange={(e) => setNewServer({...newServer, name: e.target.value})}
-                  className="px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400"
-                />
-                <input
-                  type="text"
                   placeholder="Хост (IP или домен)"
                   value={newServer.host}
-                  onChange={(e) => setNewServer({...newServer, host: e.target.value})}
+                  onChange={(e) => setNewServer({ ...newServer, host: e.target.value })}
+                  onBlur={(e) => {
+                    // Если имя пустое, присваиваем имя = хост при выходе из поля
+                    if (!newServer.name && e.target.value) {
+                      setNewServer(prev => ({ ...prev, name: e.target.value }));
+                    }
+                  }}
                   className="px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400"
                 />
                 <input
@@ -398,10 +420,27 @@ export default function SSHDashboard() {
                   onChange={(e) => setNewServer({...newServer, user: e.target.value})}
                   className="px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400"
                 />
+                <input
+                  type="text"
+                  placeholder="Имя (опционально)"
+                  value={newServer.name}
+                  onChange={(e) => setNewServer({...newServer, name: e.target.value})}
+                  className="px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400"
+                />
+              </div>
+              <div className="mb-3">
+                <input
+                  type="text"
+                  placeholder="Публичный ключ (например: ~/.ssh/id_rsa.pub)"
+                  value={newServer.publicKey}
+                  onChange={(e) => setNewServer({...newServer, publicKey: e.target.value})}
+                  className="w-full px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm"
+                />
               </div>
               <button
                 onClick={addServer}
-                className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-all"
+                disabled={!newServer.host || !newServer.user || !newServer.publicKey}
+                className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-all"
               >
                 <Plus className="w-4 h-4" />
                 Добавить сервер
@@ -465,6 +504,20 @@ export default function SSHDashboard() {
                       <div className="text-purple-200 text-sm space-y-1">
                         <p><span className="text-purple-400">User:</span> {server.user}</p>
                         <p><span className="text-purple-400">Host:</span> {server.host}</p>
+                        {server.identityFile && (
+                          <p className="flex items-center gap-1">
+                            <Key className="w-3 h-3 text-purple-400" />
+                            <span className="text-purple-400">Key:</span> 
+                            <span className="font-mono text-xs">{server.identityFile}</span>
+                          </p>
+                        )}
+                        {server.publicKey && (
+                          <p className="flex items-center gap-1">
+                            <Key className="w-3 h-3 text-purple-400" />
+                            <span className="text-purple-400">Public Key:</span> 
+                            <span className="font-mono text-xs">{server.publicKey}</span>
+                          </p>
+                        )}
                         {server.lastUsed && (
                           <p><span className="text-purple-400">Last used:</span> {server.lastUsed}</p>
                         )}

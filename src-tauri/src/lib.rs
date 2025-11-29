@@ -16,6 +16,7 @@ struct SSHServer {
     name: String,
     hostname: String,
     user: String,
+    identity_file: Option<String>,
 }
 
 #[tauri::command]
@@ -79,6 +80,7 @@ fn parse_ssh_config(config_path: String) -> Result<Vec<SSHServer>, String> {
     let mut current_host: Option<String> = None;
     let mut current_hostname: Option<String> = None;
     let mut current_user: Option<String> = None;
+    let mut current_identity: Option<String> = None;
     
     for line in reader.lines() {
         let line = line.map_err(|e| format!("Ошибка чтения строки: {}", e))?;
@@ -97,6 +99,7 @@ fn parse_ssh_config(config_path: String) -> Result<Vec<SSHServer>, String> {
                     name: name.clone(),
                     hostname: hostname.clone(),
                     user: user.clone(),
+                    identity_file: current_identity.clone(),
                 });
             }
             
@@ -104,12 +107,15 @@ fn parse_ssh_config(config_path: String) -> Result<Vec<SSHServer>, String> {
             current_host = Some(trimmed[5..].trim().to_string());
             current_hostname = None;
             current_user = None;
+            current_identity = None;
         } else if current_host.is_some() {
             // Парсим параметры хоста
             if trimmed.starts_with("HostName ") {
                 current_hostname = Some(trimmed[9..].trim().to_string());
             } else if trimmed.starts_with("User ") {
                 current_user = Some(trimmed[5..].trim().to_string());
+            } else if trimmed.starts_with("IdentityFile ") {
+                current_identity = Some(trimmed[13..].trim().to_string());
             }
         }
     }
@@ -120,10 +126,60 @@ fn parse_ssh_config(config_path: String) -> Result<Vec<SSHServer>, String> {
             name,
             hostname,
             user,
+            identity_file: current_identity,
         });
     }
     
     Ok(servers)
+}
+
+#[tauri::command]
+fn remove_ssh_config(
+    server_name: String,
+    config_path: String,
+) -> Result<String, String> {
+    // Проверяем существование файла
+    if !Path::new(&config_path).exists() {
+        return Err("Файл конфигурации не найден".to_string());
+    }
+    
+    // Читаем весь файл
+    let file = File::open(&config_path)
+        .map_err(|e| format!("Не удалось открыть файл: {}", e))?;
+    
+    let reader = BufReader::new(file);
+    let mut new_lines = Vec::new();
+    let mut skip_block = false;
+    
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Ошибка чтения строки: {}", e))?;
+        let trimmed = line.trim();
+        
+        // Определяем начало нового блока Host
+        if trimmed.starts_with("Host ") {
+            let host_name = trimmed[5..].trim().to_string();
+            skip_block = host_name == server_name;
+        }
+        
+        // Если это не блок удаляемого сервера, сохраняем строку
+        if !skip_block {
+            new_lines.push(line);
+        } else if trimmed.is_empty() {
+            // Если строка пустая в блоке удаления, сбрасываем флаг
+            skip_block = false;
+        }
+    }
+    
+    // Записываем обновлённый конфиг
+    let mut file = File::create(&config_path)
+        .map_err(|e| format!("Не удалось создать файл: {}", e))?;
+    
+    for line in new_lines {
+        writeln!(file, "{}", line)
+            .map_err(|e| format!("Не удалось записать строку: {}", e))?;
+    }
+    
+    Ok(format!("Сервер {} удалён из конфигурации", server_name))
 }
 
 #[tauri::command]
@@ -277,6 +333,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_ssh_paths,
             add_ssh_config,
+            remove_ssh_config,
             open_powershell_with_command,
             verify_ssh_connection,
             execute_ssh_command,
