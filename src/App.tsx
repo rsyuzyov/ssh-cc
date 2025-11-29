@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Terminal as TerminalIcon, Server, Play, Plus, CheckCircle, XCircle, Activity, Zap, Key, Trash2, Edit } from 'lucide-react';
+import { Terminal as TerminalIcon, Server, Plus, CheckCircle, XCircle, Key, Trash2, Edit } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import TerminalComponent from './Terminal';
 
@@ -8,12 +8,7 @@ export default function SSHDashboard() {
   
   const [newServer, setNewServer] = useState({ host: '', user: 'root', name: '', publicKey: '' });
   const [editingServer, setEditingServer] = useState(null);
-  const [commandInput, setCommandInput] = useState('');
-  const [commandHistory, setCommandHistory] = useState([]);
-  const [selectedServers, setSelectedServers] = useState(new Set());
-  const [executing, setExecuting] = useState(false);
-  const [savedSequences, setSavedSequences] = useState([]);
-  const [sequenceName, setSequenceName] = useState('');
+
   const [isInitialized, setIsInitialized] = useState(false);
   
   // Terminal state
@@ -259,37 +254,7 @@ export default function SSHDashboard() {
     }
   };
 
-  const deleteSelectedServers = async () => {
-    if (selectedServers.size === 0) {
-      alert('⚠️ Выберите серверы для удаления');
-      return;
-    }
-    
-    const serverNames = servers
-      .filter(s => selectedServers.has(s.id))
-      .map(s => s.name)
-      .join(', ');
-    
-    if (confirm(`Удалить выбранные серверы (${serverNames}) из списка и из конфигурации?`)) {
-      for (const serverId of selectedServers) {
-        const server = servers.find(s => s.id === serverId);
-        if (server) {
-          try {
-            await invoke('remove_ssh_config', {
-              serverName: server.name,
-              configPath: configPath
-            });
-          } catch (error) {
-            console.error(`Ошибка удаления сервера ${server.name}:`, error);
-          }
-        }
-      }
-      
-      // Удаляем из списка
-      setServers(prev => prev.filter(s => !selectedServers.has(s.id)));
-      setSelectedServers(new Set());
-    }
-  };
+
 
   const startEditServer = (server) => {
     setEditingServer({
@@ -356,67 +321,7 @@ export default function SSHDashboard() {
     }
   };
 
-  const toggleServerSelection = (serverId) => {
-    const newSelection = new Set(selectedServers);
-    if (newSelection.has(serverId)) {
-      newSelection.delete(serverId);
-    } else {
-      newSelection.add(serverId);
-    }
-    setSelectedServers(newSelection);
-  };
 
-  const executeCommand = async () => {
-    if (!commandInput.trim() || selectedServers.size === 0) return;
-    
-    setExecuting(true);
-    const selectedServerList = servers.filter(s => selectedServers.has(s.id));
-    
-    const result = {
-      id: Date.now(),
-      command: commandInput,
-      servers: selectedServerList.map(s => s.name),
-      timestamp: new Date().toLocaleTimeString(),
-      status: 'executing'
-    };
-    
-    setCommandHistory([result, ...commandHistory]);
-    const cmd = commandInput;
-    setCommandInput('');
-    
-    try {
-      // Выполняем команду на всех выбранных серверах
-      for (const server of selectedServerList) {
-        await invoke('execute_ssh_command', {
-          serverName: server.name,
-          command: cmd,
-          configPath: configPath
-        });
-      }
-      
-      setCommandHistory(prev => 
-        prev.map(h => h.id === result.id ? {...h, status: 'completed'} : h)
-      );
-    } catch (error) {
-      alert(`❌ Ошибка выполнения: ${error}`);
-    } finally {
-      setExecuting(false);
-    }
-  };
-
-  const saveSequence = () => {
-    if (!sequenceName.trim() || commandHistory.length === 0) return;
-    
-    const sequence = {
-      id: Date.now(),
-      name: sequenceName,
-      commands: commandHistory.slice(0, 5).map(h => h.command),
-      created: new Date().toLocaleDateString()
-    };
-    
-    setSavedSequences([...savedSequences, sequence]);
-    setSequenceName('');
-  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-8">
@@ -481,8 +386,8 @@ export default function SSHDashboard() {
         </div>
       )}
 <div className="max-w-7xl mx-auto">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-          <div className="lg:col-span-2 bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
+        <div className="grid grid-cols-1 gap-6 mb-8">
+          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
             <div className="flex items-center mb-4">
               <h2 className="text-2xl font-bold text-white flex items-center gap-2">
                 <Server className="w-6 h-6 text-purple-400" />
@@ -606,7 +511,6 @@ export default function SSHDashboard() {
                 <table className="w-full">
                   <thead className="bg-black/50">
                     <tr className="text-purple-300 text-sm">
-                      <th className="w-12 p-3 text-left"></th>
                       <th className="p-3 text-left">Имя</th>
                       <th className="p-3 text-left">Хост</th>
                       <th className="p-3 text-left">Ключ</th>
@@ -621,23 +525,10 @@ export default function SSHDashboard() {
                         key={server.id}
                         className={`border-t border-purple-500/20 transition-all ${
                           server.status === 'configured'
-                            ? selectedServers.has(server.id)
-                              ? 'bg-purple-900/30'
-                              : 'hover:bg-white/5 cursor-pointer'
+                            ? 'hover:bg-white/5'
                             : 'bg-yellow-500/10'
                         }`}
-                        onClick={() => server.status === 'configured' && toggleServerSelection(server.id)}
                       >
-                        <td className="p-3">
-                          {server.status === 'configured' && (
-                            <input
-                              type="checkbox"
-                              checked={selectedServers.has(server.id)}
-                              onChange={() => {}}
-                              className="w-4 h-4 rounded border-purple-400 bg-purple-900/30 accent-purple-500"
-                            />
-                          )}
-                        </td>
                         <td className="p-3 text-white font-medium">{server.name}</td>
                         <td className="p-3 text-purple-200">{server.host}</td>
                         <td className="p-3 text-purple-300 font-mono text-xs">
@@ -712,117 +603,6 @@ export default function SSHDashboard() {
                 </table>
               )}
             </div>
-          </div>
-
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
-            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-              <Zap className="w-6 h-6 text-yellow-400" />
-              Сохраненные последовательности
-            </h2>
-            
-            <div className="mb-4">
-              <input
-                type="text"
-                placeholder="Имя последовательности"
-                value={sequenceName}
-                onChange={(e) => setSequenceName(e.target.value)}
-                className="w-full px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 mb-2"
-              />
-              <button
-                onClick={saveSequence}
-                disabled={!sequenceName.trim() || commandHistory.length === 0}
-                className="w-full bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium text-sm transition-all"
-              >
-                Сохранить текущие команды
-              </button>
-            </div>
-
-            <div className="space-y-2">
-              {savedSequences.length === 0 ? (
-                <p className="text-purple-300/50 text-sm text-center py-8">
-                  Пока нет сохраненных последовательностей
-                </p>
-              ) : (
-                savedSequences.map(seq => (
-                  <div key={seq.id} className="bg-black/30 rounded-lg p-3 border border-purple-400/20">
-                    <div className="flex items-start justify-between mb-2">
-                      <h3 className="text-white font-medium text-sm">{seq.name}</h3>
-                      <button className="text-purple-400 hover:text-purple-300">
-                        <Play className="w-4 h-4" />
-                      </button>
-                    </div>
-                    <p className="text-purple-300/70 text-xs">{seq.commands.length} команд</p>
-                    <p className="text-purple-300/50 text-xs">{seq.created}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl mb-8">
-          <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-            <TerminalIcon className="w-6 h-6 text-green-400" />
-            Выполнение команд
-          </h2>
-          
-          <div className="flex gap-3 mb-4">
-            <input
-              type="text"
-              placeholder="Введите команду для выполнения на выбранных серверах..."
-              value={commandInput}
-              onChange={(e) => setCommandInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && executeCommand()}
-              className="flex-1 px-4 py-3 bg-black/40 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono"
-            />
-            <button
-              onClick={executeCommand}
-              disabled={!commandInput.trim() || selectedServers.size === 0 || executing}
-              className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium flex items-center gap-2 transition-all"
-            >
-              <Play className="w-5 h-5" />
-              Выполнить
-            </button>
-          </div>
-          
-          <div className="text-purple-300 text-sm mb-4">
-            {selectedServers.size === 0 ? (
-              <p className="text-yellow-300">⚠️ Выберите хотя бы один сервер</p>
-            ) : (
-              <p>✓ Выбрано серверов: {selectedServers.size}</p>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
-          <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-            <Activity className="w-6 h-6 text-blue-400" />
-            История выполнения
-          </h2>
-          
-          <div className="space-y-3">
-            {commandHistory.length === 0 ? (
-              <p className="text-purple-300/50 text-center py-8">
-                История команд пуста. Выполните команду на серверах!
-              </p>
-            ) : (
-              commandHistory.map(item => (
-                <div key={item.id} className="bg-black/30 rounded-lg p-4 border border-purple-400/20">
-                  <div className="flex items-start justify-between mb-2">
-                    <code className="text-green-300 font-mono text-sm">{item.command}</code>
-                    {item.status === 'completed' ? (
-                      <CheckCircle className="w-5 h-5 text-green-400" />
-                    ) : (
-                      <div className="animate-spin rounded-full h-5 w-5 border-2 border-purple-400 border-t-transparent"></div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-4 text-xs text-purple-300/70">
-                    <span>🕐 {item.timestamp}</span>
-                    <span>🖥️ {item.servers.join(', ')}</span>
-                  </div>
-                </div>
-              ))
-            )}
           </div>
         </div>
       </div>
