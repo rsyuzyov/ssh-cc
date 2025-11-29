@@ -1,13 +1,25 @@
 import React, { useState } from 'react';
-import { Terminal as TerminalIcon, Server, Plus, CheckCircle, XCircle, Key, Trash2, Edit } from 'lucide-react';
+import { Terminal as TerminalIcon, Plus, CheckCircle, XCircle, Key, Trash2, Edit, FolderOpen, RefreshCw } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import TerminalComponent from './Terminal';
 
+interface Server {
+  id: number;
+  name: string;
+  host: string;
+  user: string;
+  publicKey?: string;
+  identityFile?: string | null;
+  status: string;
+  lastUsed: string | null;
+}
+
 export default function SSHDashboard() {
-  const [servers, setServers] = useState([]);
+  const [servers, setServers] = useState<Server[]>([]);
   
   const [newServer, setNewServer] = useState({ host: '', user: 'root', name: '', publicKey: '' });
-  const [editingServer, setEditingServer] = useState(null);
+  const [editingServer, setEditingServer] = useState<{id: number, host: string, user: string, name: string, publicKey: string} | null>(null);
 
   const [isInitialized, setIsInitialized] = useState(false);
   
@@ -18,6 +30,8 @@ export default function SSHDashboard() {
   const [configPath, setConfigPath] = useState('');
   const [privateKeyPath, setPrivateKeyPath] = useState('');
   const [defaultPublicKey, setDefaultPublicKey] = useState('');
+  const [showKeyGenerationPrompt, setShowKeyGenerationPrompt] = useState(false);
+  const [isGeneratingKey, setIsGeneratingKey] = useState(false);
 
   // Функция для загрузки серверов из конфига
   const loadServersFromConfig = async (path: string) => {
@@ -88,6 +102,12 @@ export default function SSHDashboard() {
         
         // Загружаем серверы из конфига
         await loadServersFromConfig(paths.config);
+        
+        // Проверяем наличие SSH ключей
+        const keysExist = await invoke('check_ssh_keys_exist');
+        if (!keysExist) {
+          setShowKeyGenerationPrompt(true);
+        }
         
         setIsInitialized(true);
       } catch (error) {
@@ -198,7 +218,7 @@ export default function SSHDashboard() {
     }
   };
 
-  const verifyConnection = async (server) => {
+  const verifyConnection = async (server: Server) => {
     setServers(prev => prev.map(s => 
       s.id === server.id ? {...s, status: 'verifying'} : s
     ));
@@ -228,7 +248,7 @@ export default function SSHDashboard() {
     }
   };
 
-  const deleteServer = async (serverId) => {
+  const deleteServer = async (serverId: number) => {
     const server = servers.find(s => s.id === serverId);
     if (!server) return;
     
@@ -242,11 +262,6 @@ export default function SSHDashboard() {
         
         // Удаляем из списка
         setServers(prev => prev.filter(s => s.id !== serverId));
-        
-        // Убираем из выбранных
-        const newSelection = new Set(selectedServers);
-        newSelection.delete(serverId);
-        setSelectedServers(newSelection);
       } catch (error) {
         console.error('Ошибка удаления сервера:', error);
         alert(`❌ Ошибка удаления из конфига: ${error}`);
@@ -254,9 +269,65 @@ export default function SSHDashboard() {
     }
   };
 
+  const openConfigFile = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        title: 'Выберите файл конфигурации SSH'
+      });
+      
+      if (selected) {
+        setConfigPath(selected as string);
+      }
+    } catch (error) {
+      console.error('Ошибка открытия файла:', error);
+    }
+  };
+
+  const generateSSHKey = async () => {
+    setIsGeneratingKey(true);
+    try {
+      const homeDir = await invoke('execute_terminal_command', { 
+        command: 'echo $env:USERPROFILE' 
+      });
+      const keyPath = `${homeDir.toString().trim()}/.ssh/id_rsa`;
+      
+      // Проверяем, существует ли ключ
+      try {
+        await invoke('generate_ssh_key', { keyPath: keyPath });
+        const publicKeyPath = `${keyPath}.pub`;
+        setDefaultPublicKey(publicKeyPath);
+        setNewServer(prev => ({ ...prev, publicKey: publicKeyPath }));
+        setShowKeyGenerationPrompt(false);
+        alert('✅ SSH ключ успешно сгенерирован!');
+      } catch (error: any) {
+        if (error.includes('уже существует')) {
+          // Ключ существует, спрашиваем о перезаписи
+          if (confirm('Ключ уже существует. Удалить и создать новый?')) {
+            await invoke('delete_ssh_key', { keyPath: keyPath });
+            await invoke('generate_ssh_key', { keyPath: keyPath });
+            const publicKeyPath = `${keyPath}.pub`;
+            setDefaultPublicKey(publicKeyPath);
+            setNewServer(prev => ({ ...prev, publicKey: publicKeyPath }));
+            setShowKeyGenerationPrompt(false);
+            alert('✅ SSH ключ успешно сгенерирован!');
+          }
+        } else {
+          throw error;
+        }
+      }
+    } catch (error) {
+      console.error('Ошибка генерации ключа:', error);
+      alert(`❌ Ошибка генерации ключа: ${error}`);
+    } finally {
+      setIsGeneratingKey(false);
+    }
+  };
 
 
-  const startEditServer = (server) => {
+
+  const startEditServer = (server: Server) => {
     setEditingServer({
       id: server.id,
       host: server.host,
@@ -271,7 +342,7 @@ export default function SSHDashboard() {
   };
 
   const saveEdit = async () => {
-    if (!editingServer.host || !editingServer.user || !editingServer.publicKey) {
+    if (!editingServer || !editingServer.host || !editingServer.user || !editingServer.publicKey) {
       alert('⚠️ Заполните все обязательные поля');
       return;
     }
@@ -302,13 +373,13 @@ export default function SSHDashboard() {
 
       // Обновляем список серверов
       setServers(prev => prev.map(s => 
-        s.id === editingServer.id 
+        s.id === editingServer!.id 
           ? { 
               ...s, 
-              name: editingServer.name || editingServer.host,
-              host: editingServer.host,
-              user: editingServer.user,
-              publicKey: editingServer.publicKey,
+              name: editingServer!.name || editingServer!.host,
+              host: editingServer!.host,
+              user: editingServer!.user,
+              publicKey: editingServer!.publicKey,
               identityFile: privateKey
             }
           : s
@@ -325,7 +396,47 @@ export default function SSHDashboard() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-8">
-            {/* Terminal Modal */}
+      {/* Key Generation Prompt Modal */}
+      {showKeyGenerationPrompt && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-8">
+          <div className="bg-slate-900 rounded-2xl border border-purple-500/30 shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <Key className="w-8 h-8 text-yellow-400" />
+              <h3 className="text-xl font-bold text-white">SSH ключи не найдены</h3>
+            </div>
+            <p className="text-purple-200 mb-6">
+              В директории ~/.ssh не обнаружено SSH ключей. Хотите сгенерировать новый ключ для подключения к серверам?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={generateSSHKey}
+                disabled={isGeneratingKey}
+                className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:from-gray-600 disabled:to-gray-700 text-white px-4 py-2 rounded-lg font-medium transition-all flex items-center justify-center gap-2"
+              >
+                {isGeneratingKey ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    Генерация...
+                  </>
+                ) : (
+                  <>
+                    <Key className="w-4 h-4" />
+                    Сгенерировать
+                  </>
+                )}
+              </button>
+              <button
+                onClick={() => setShowKeyGenerationPrompt(false)}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-medium transition-all"
+              >
+                Позже
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Terminal Modal */}
       {showTerminal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-8">
           <div className="bg-slate-900 rounded-2xl border border-purple-500/30 shadow-2xl w-full max-w-4xl h-[600px] flex flex-col">
@@ -386,28 +497,28 @@ export default function SSHDashboard() {
         </div>
       )}
 <div className="max-w-7xl mx-auto">
-        <div className="grid grid-cols-1 gap-6 mb-8">
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
-            <div className="flex items-center mb-4">
-              <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-                <Server className="w-6 h-6 text-purple-400" />
-                Серверы
-              </h2>
-            </div>
-            
             {/* Настройка файла конфигурации */}
-            <div className="mb-4">
-              <input
-                type="text"
-                placeholder="Файл конфигурации SSH (например: ~/.ssh/config)"
-                value={configPath}
-                onChange={(e) => setConfigPath(e.target.value)}
-                className="w-full px-4 py-2 bg-black/40 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm"
-              />
+            <div className="mb-6">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Файл конфигурации SSH (например: ~/.ssh/config)"
+                  value={configPath}
+                  onChange={(e) => setConfigPath(e.target.value)}
+                  className="flex-1 px-4 py-2 bg-black/40 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm"
+                />
+                <button
+                  onClick={openConfigFile}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-all flex items-center gap-2"
+                  title="Открыть файл"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             
             {/* Форма добавления/редактирования сервера */}
-            <div className="bg-black/30 rounded-xl p-4 mb-4">
+            <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 mb-6 border border-purple-500/30">
               {editingServer && (
                 <div className="mb-3 flex items-center justify-between">
                   <span className="text-yellow-300 text-sm flex items-center gap-2">
@@ -490,20 +601,30 @@ export default function SSHDashboard() {
                     Сохранить
                   </button>
                 ) : (
-                  <button
-                    onClick={addServer}
-                    disabled={!newServer.host || !newServer.user || !newServer.publicKey}
-                    className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-medium flex items-center gap-2 transition-all whitespace-nowrap"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Добавить сервер
-                  </button>
+                  <>
+                    <button
+                      onClick={generateSSHKey}
+                      disabled={isGeneratingKey}
+                      className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-all"
+                      title="Сгенерировать SSH ключ"
+                    >
+                      <RefreshCw className={`w-5 h-5 ${isGeneratingKey ? 'animate-spin' : ''}`} />
+                    </button>
+                    <button
+                      onClick={addServer}
+                      disabled={!newServer.host || !newServer.user || !newServer.publicKey}
+                      className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-all"
+                      title="Добавить сервер"
+                    >
+                      <Plus className="w-5 h-5" />
+                    </button>
+                  </>
                 )}
               </div>
             </div>
 
             {/* Таблица серверов */}
-            <div className="bg-black/30 rounded-xl overflow-hidden">{servers.length === 0 ? (
+            <div className="bg-white/10 backdrop-blur-md rounded-xl overflow-hidden border border-purple-500/30">{servers.length === 0 ? (
                 <div className="p-8 text-center text-purple-300/50">
                   Нет серверов. Добавьте первый сервер!
                 </div>
@@ -603,8 +724,6 @@ export default function SSHDashboard() {
                 </table>
               )}
             </div>
-          </div>
-        </div>
       </div>
     </div>
   );

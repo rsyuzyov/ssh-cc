@@ -372,11 +372,114 @@ fn execute_terminal_command(command: String) -> Result<String, String> {
     Ok(if !stdout.is_empty() { stdout } else { stderr })
 }
 
+#[tauri::command]
+fn generate_ssh_key(key_path: String) -> Result<String, String> {
+    // Проверяем, существует ли уже ключ
+    let private_key = if key_path.ends_with(".pub") {
+        key_path.trim_end_matches(".pub").to_string()
+    } else {
+        key_path.clone()
+    };
+    
+    if Path::new(&private_key).exists() {
+        return Err(format!("Ключ уже существует: {}", private_key));
+    }
+    
+    // Создаем директорию если её нет
+    if let Some(parent) = Path::new(&private_key).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Не удалось создать директорию: {}", e))?;
+    }
+    
+    // Генерируем SSH ключ
+    let output = Command::new("ssh-keygen")
+        .args(&[
+            "-t", "rsa",
+            "-b", "4096",
+            "-f", &private_key,
+            "-N", "",  // Пустая парольная фраза
+            "-C", "generated-by-ssh-commander"
+        ])
+        .output()
+        .map_err(|e| format!("Ошибка генерации ключа: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Не удалось сгенерировать ключ: {}", stderr));
+    }
+    
+    Ok(format!("Ключ успешно сгенерирован: {}", private_key))
+}
+
+#[tauri::command]
+fn check_ssh_keys_exist() -> Result<bool, String> {
+    // Получаем домашнюю директорию
+    let home_dir = std::env::var("USERPROFILE")
+        .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
+    
+    let ssh_dir = format!("{}/.ssh", home_dir);
+    
+    // Проверяем существование директории
+    if !Path::new(&ssh_dir).exists() {
+        return Ok(false);
+    }
+    
+    // Ищем любые приватные ключи (файлы без расширения .pub)
+    let entries = std::fs::read_dir(&ssh_dir)
+        .map_err(|e| format!("Ошибка чтения директории: {}", e))?;
+    
+    for entry in entries {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_name) = path.file_name() {
+                    let name = file_name.to_string_lossy();
+                    // Проверяем, что это не .pub файл и не known_hosts/config
+                    if !name.ends_with(".pub") && 
+                       name != "known_hosts" && 
+                       name != "config" &&
+                       name != "authorized_keys" {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(false)
+}
+
+#[tauri::command]
+fn delete_ssh_key(key_path: String) -> Result<String, String> {
+    let private_key = if key_path.ends_with(".pub") {
+        key_path.trim_end_matches(".pub").to_string()
+    } else {
+        key_path.clone()
+    };
+    
+    let public_key = format!("{}.pub", private_key);
+    
+    // Удаляем приватный ключ
+    if Path::new(&private_key).exists() {
+        std::fs::remove_file(&private_key)
+            .map_err(|e| format!("Не удалось удалить приватный ключ: {}", e))?;
+    }
+    
+    // Удаляем публичный ключ
+    if Path::new(&public_key).exists() {
+        std::fs::remove_file(&public_key)
+            .map_err(|e| format!("Не удалось удалить публичный ключ: {}", e))?;
+    }
+    
+    Ok(format!("Ключи удалены: {}", private_key))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_ssh_paths,
             add_ssh_config,
@@ -387,7 +490,10 @@ pub fn run() {
             execute_terminal_command,
             parse_ssh_config,
             save_ssh_paths,
-            load_ssh_paths
+            load_ssh_paths,
+            generate_ssh_key,
+            check_ssh_keys_exist,
+            delete_ssh_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
