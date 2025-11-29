@@ -481,29 +481,13 @@ export default function SSHDashboard() {
         </div>
       )}
 <div className="max-w-7xl mx-auto">
-        <div className="mb-8 text-center">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <TerminalIcon className="w-12 h-12 text-purple-400" />
-            <h1 className="text-5xl font-bold text-white">SSH Command Center</h1>
-          </div>
-          <p className="text-purple-200 text-lg">Управляйте своими серверами с элегантностью</p>
-        </div>
-
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2 bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center mb-4">
               <h2 className="text-2xl font-bold text-white flex items-center gap-2">
                 <Server className="w-6 h-6 text-purple-400" />
                 Серверы
               </h2>
-              <button
-                onClick={addServer}
-                disabled={!newServer.host || !newServer.user || !newServer.publicKey}
-                className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                Добавить сервер
-              </button>
             </div>
             
             {/* Настройка файла конфигурации */}
@@ -593,12 +577,21 @@ export default function SSHDashboard() {
                   }}
                   className="flex-1 px-4 py-2 bg-white/10 border border-purple-400/30 rounded-lg text-white placeholder-purple-300/50 focus:outline-none focus:border-purple-400 font-mono text-sm"
                 />
-                {editingServer && (
+                {editingServer ? (
                   <button
                     onClick={saveEdit}
                     className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white px-6 py-2 rounded-lg font-medium transition-all"
                   >
                     Сохранить
+                  </button>
+                ) : (
+                  <button
+                    onClick={addServer}
+                    disabled={!newServer.host || !newServer.user || !newServer.publicKey}
+                    className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-medium flex items-center gap-2 transition-all whitespace-nowrap"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Добавить сервер
                   </button>
                 )}
               </div>
